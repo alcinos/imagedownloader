@@ -28,7 +28,6 @@ def make_session(proxies=None, headers=None):
     s.proxies.update(proxies)
     s.headers.update(headers)
     s.id = uuid4().hex
-
     return s
 
 
@@ -75,6 +74,7 @@ class ImageDownloader(object):
     notebook = attr.ib(converter=bool, default=False)
     debug = attr.ib(converter=bool, default=False)
     logfile = attr.ib(default=config.get('LOGFILE'))
+    path_fn = attr.ib(default=None)
 
     @user_agent.validator
     def update_headers(self, attribute, value):
@@ -111,6 +111,16 @@ class ImageDownloader(object):
         self.logger = get_logger(__name__, filename=self.logfile, streamhandler=value)
         if (self.logfile is None) and (not value):
             logging.disable(logging.CRITICAL)
+
+    @path_fn.validator
+    def set_path_fn(self, attribute, value):
+        def _default_path_fn(store_path, url):
+            return Path(store_path, hashlib.sha1(to_bytes(url)).hexdigest() + '.jpg')
+
+        if value is None:
+            self.path_fn = _default_path_fn
+        else:
+            self.path_fn = value
 
     def __call__(self, urls, force=False):
         """Download url or list of urls
@@ -193,7 +203,7 @@ class ImageDownloader(object):
             'success': False,
             'url': url,
         }
-        path = Path(self.store_path, hashlib.sha1(to_bytes(url)).hexdigest() + '.jpg')
+        path = self.path_fn(self.store_path, url)
         if path.exists() and not force:
             metadata.update({
                 'success': True,
@@ -201,8 +211,14 @@ class ImageDownloader(object):
             })
             self.logger.info('On cache', extra=metadata)
             return path
+
+        def _random_choice(choices):
+            if choices and isinstance(choices, list):
+                return random.choice(choices)
+            else:
+                return None
         try:
-            session = session or make_session(proxies=random.choice(self.proxies), headers=self.headers)
+            session = session or make_session(proxies=_random_choice(self.proxies), headers=self.headers)
             timeout = timeout or self.timeout
             metadata['session'] = {
                 'headers': dict(session.headers),
@@ -285,7 +301,8 @@ def download(urls,
              notebook=False,
              debug=False,
              force=False,
-             logfile=config.get('LOGFILE')):
+             logfile=config.get('LOGFILE'),
+             path_fn=None):
     """Asynchronously download images using multiple threads.
 
     Parameters
@@ -336,6 +353,7 @@ def download(urls,
         notebook=notebook,
         debug=debug,
         logfile=logfile,
+        path_fn=path_fn
     )
 
     return downloader(urls, force=force)
